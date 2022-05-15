@@ -3,6 +3,12 @@
 #include <iostream>
 #include <cstdlib>
 #include <cmath> // log10()
+// SIMD
+#include <xmmintrin.h>
+#include <nmmintrin.h>
+#include <immintrin.h>
+#include <time.h>
+#include <iomanip> // std::setprecision()
 using namespace std;
 
 #define sqr(x) (x*x)
@@ -13,11 +19,15 @@ int MYSCREEN_HEIGHT = 1080;
 HINSTANCE GlobalHInst;
 bool DitherArg = true;
 bool OrderedDitherArg = false;
+bool UseSIMD = false;
 BYTE BayerMatrixSizeArg = 16;
 BYTE BWBoundArg = 128;
 BYTE src[1920*1080*4]; // 存储原图像，用以计算生成图像的效果
 const int DEPTH = 255; // 色彩空间深度
-int frame = 0; // 帧
+//int frame = 0; // 帧
+//double frames_per_second;
+//clock_t start, current;
+
 int psnr_sum = 0;
 LRESULT CALLBACK WndProc( HWND, UINT, WPARAM, LPARAM ) ;
 
@@ -145,6 +155,7 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine
 
     ShowWindow( hwnd, iCmdShow ) ;
     UpdateWindow( hwnd ) ;
+//    start = clock();
 
     while( GetMessage( &msg, NULL, 0, 0 ) )
     {
@@ -212,7 +223,7 @@ void dither_jarvis(int W, int H, BYTE *buff, int bmW, int bmH, BYTE *bayerMatrix
 //    printf("=================\n");
 }
 
-void black_white(int W, int H, BYTE *buff, int bmW, int bmH, BYTE *bayerMatrix) {
+void black_white(int W, int H, BYTE *buff, int bmW, int bmH, const BYTE *bayerMatrix) {
     int index;
     BYTE r, g, b, y;
     for(int i=0; i<H; i++){
@@ -230,6 +241,22 @@ void black_white(int W, int H, BYTE *buff, int bmW, int bmH, BYTE *bayerMatrix) 
         }
     }
 }
+
+void black_white_simd(int W, int H, BYTE *buff, int bmW, int bmH, const BYTE *bayerMatrix){
+    int index;
+    BYTE r, g, b, y;
+    for(int i=0; i<H; i++){
+        for(int j=0; j<W; j++){
+            index = (i * W + j) * 4;
+            r = buff[index];
+            g = buff[index+1];
+            b = buff[index+2];
+            y = (r>>2) + (g>>1) + (b>>2) + (r&0x1) + (g&0x1) + (b&0x1) - (r&g&b&0x1);
+            *(unsigned int*)(buff + index) = y > bayerMatrix[(i%bmH)*bmW+j%bmW] || y==0xff ? 0x00ffffff : 0;
+        }
+    }
+}
+
 // PSNR/峰值信噪比 (Peak Signal-to-Noise Ratio)
 // 越大越好
 // MSE = (sum_{i,j}((source(i,j)-dst(i,j))^2))/(mn)
@@ -244,6 +271,7 @@ double psnr(int W, int H, const BYTE* source, const BYTE* dst){
                 mse[k] += ((int)source[index + k] - (int)dst[index + k])
                           *((int)source[index + k] - (int)dst[index + k]);
             }
+
         }
     }
     for(double & i : mse){
@@ -321,6 +349,7 @@ double ssim(int W, int H, const BYTE* source, const BYTE* dst){
 
 void processScreenShootPixels()
 {
+    clock_t start = clock();
     // copy screen to bitmap, get pixels of screen
     HDC     src_hdc = GetDC(NULL);
     HDC     src_mdc = CreateCompatibleDC(src_hdc);
@@ -396,10 +425,17 @@ void processScreenShootPixels()
     if(DitherArg) {
         dither_jarvis(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, pixels, bayerMatrixSize, bayerMatrixSize, bayerMatrix);
     } else {
-        black_white(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, pixels, bayerMatrixSize, bayerMatrixSize, bayerMatrix);
+        if(UseSIMD){
+            black_white_simd(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, pixels, bayerMatrixSize, bayerMatrixSize, bayerMatrix);
+        }
+        else {
+            black_white(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, pixels, bayerMatrixSize, bayerMatrixSize, bayerMatrix);
+        }
     }
+//    frame++;
     cout << "PSNR: " << psnr(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, src, pixels) << endl;
     cout << "SSIM: " << ssim(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, src, pixels) << endl;
+//    cout << "FRAME: " << frame << endl;
     // The two seems working well
 
     // draw pixels in extend screen
@@ -415,6 +451,11 @@ void processScreenShootPixels()
     ReleaseDC(NULL, dst_hdc);
     DeleteObject(dst_hbitmap);
     DeleteObject(src_hbitmap);
+
+    clock_t current = clock();
+    double time_taken = double(current - start) / double(CLOCKS_PER_SEC);
+    double frames_per_second = 1 / time_taken;
+    cout << "Frames per second: " << fixed << frames_per_second << setprecision(4) << endl;
 }
 
 LRESULT CALLBACK WndProc( HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam )
@@ -426,6 +467,7 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam 
     static HWND orderedDitherText, orderedDitherYes, orderedDitherNo;
     static HWND bayerMatrixSizeText, bayerMatrixSizeEdit;
     static HWND boundText, boundEdit;
+    static HWND simdText, simdYes, simdNo;
     int wmId, wmEvent;
     TCHAR screenWidth[5], screenHeight[5], bwBoundInput[5], bayerMatrixSizeInput[5];
     switch( message ){
@@ -443,7 +485,7 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam 
             ditherYes = CreateWindow(TEXT("button"), TEXT("是"), WS_CHILD|WS_VISIBLE|BS_LEFT|BS_AUTORADIOBUTTON|WS_GROUP, 165, 70, 50, 30, hwnd, (HMENU)6, GlobalHInst, NULL);
             ditherNo = CreateWindow(TEXT("button"), TEXT("否"), WS_CHILD|WS_VISIBLE|BS_LEFT|BS_AUTORADIOBUTTON, 225, 70, 50, 30, hwnd, (HMENU)7, GlobalHInst, NULL);
 
-            orderedDitherText = CreateWindow(TEXT("static"), TEXT("QMatix："), WS_CHILD|WS_VISIBLE|SS_CENTERIMAGE|SS_RIGHT,10, 100, 150, 30, hwnd, (HMENU)8, GlobalHInst, NULL);
+            orderedDitherText = CreateWindow(TEXT("static"), TEXT("QMatrix："), WS_CHILD|WS_VISIBLE|SS_CENTERIMAGE|SS_RIGHT,10, 100, 150, 30, hwnd, (HMENU)8, GlobalHInst, NULL);
             orderedDitherYes = CreateWindow(TEXT("button"), TEXT("是"), WS_CHILD|WS_VISIBLE|BS_LEFT|BS_AUTORADIOBUTTON|WS_GROUP, 165, 100, 50, 30, hwnd, (HMENU)9, GlobalHInst, NULL);
             orderedDitherNo = CreateWindow(TEXT("button"), TEXT("否"), WS_CHILD|WS_VISIBLE|BS_LEFT|BS_AUTORADIOBUTTON, 225, 100, 50, 30, hwnd, (HMENU)10, GlobalHInst, NULL);
 
@@ -452,6 +494,10 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam 
 
             boundText = CreateWindow(TEXT("static"), TEXT("黑白阈值："), WS_CHILD|WS_VISIBLE|SS_CENTERIMAGE|SS_RIGHT, 10, 160, 150, 30, hwnd, (HMENU)13, GlobalHInst, NULL);
             boundEdit = CreateWindow(TEXT("edit"), TEXT("128"), WS_CHILD|WS_VISIBLE|WS_BORDER|ES_AUTOHSCROLL, 165, 160, 100, 30, hwnd, (HMENU)14, GlobalHInst, NULL);
+
+            orderedDitherText = CreateWindow(TEXT("static"), TEXT("Use SIMD: "), WS_CHILD|WS_VISIBLE|SS_CENTERIMAGE|SS_RIGHT,10, 190, 150, 30, hwnd, (HMENU)15, GlobalHInst, NULL);
+            orderedDitherYes = CreateWindow(TEXT("button"), TEXT("是"), WS_CHILD|WS_VISIBLE|BS_LEFT|BS_AUTORADIOBUTTON|WS_GROUP, 165, 190, 50, 30, hwnd, (HMENU)16, GlobalHInst, NULL);
+            orderedDitherNo = CreateWindow(TEXT("button"), TEXT("否"), WS_CHILD|WS_VISIBLE|BS_LEFT|BS_AUTORADIOBUTTON, 225, 190, 50, 30, hwnd, (HMENU)17, GlobalHInst, NULL);
 
             SendMessage(ditherText, WM_SETFONT, (WPARAM)hFont, NULL);
             SendMessage(ditherYes, WM_SETFONT, (WPARAM)hFont, NULL);
@@ -502,6 +548,12 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam 
                     if(strlen != 0) BWBoundArg = CHARToBYTE(bwBoundInput, strlen);
                     break;
                 }
+                case 16:
+                    if(wmEvent == BN_CLICKED) UseSIMD = true;
+                    break;
+                case 17:
+                    if(wmEvent == BN_CLICKED) UseSIMD = false;
+                    break;
                 default:
                     return DefWindowProc(hwnd, message, wParam, lParam);
             }
