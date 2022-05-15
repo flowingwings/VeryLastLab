@@ -223,6 +223,57 @@ void dither_jarvis(int W, int H, BYTE *buff, int bmW, int bmH, BYTE *bayerMatrix
 //    printf("=================\n");
 }
 
+void dither_jarvis_simd(int W, int H, BYTE *buff, int bmW, int bmH, BYTE *bayerMatrix) {
+    // reverse up && down && count y (rgba -> rgby)
+    int index = 0;
+    BYTE r, g, b, y;
+    for(int i=0; i<H; i++){
+        for(int j=0; j<W; j++){
+            r = buff[index];
+            g = buff[index+1];
+            b = buff[index+2];
+            buff[index+3] = (r>>2) + (g>>1) + (b>>2) + (r&0x1) + (g&0x1) + (b&0x1) - (r&g&b&0x1);
+            index += 4;
+        }
+    }
+
+    BYTE IQxy, IRxy, tmperr;
+    for(int i=0; i<H; i++){
+        for(int j=0; j<W; j++){
+            index = (i*W+j)*4;
+            y = buff[index+3];
+            IQxy = y > bayerMatrix[(i%bmH)*bmW+j%bmW] || y==0xff ? 1 : 0;
+            if(IQxy) {
+                *(unsigned int*)(buff + index) = 0x00ffffff;
+            } else {
+                *(unsigned int*)(buff + index) = 0;
+            }
+            IRxy = IQxy ? 255-y : y;
+            for(int r=i; r<=i+2 && r<H; r++){
+                for(int c=j; c<=j+2 && c<W; c++){
+                    if(r==i && c==j) continue;
+                    index = (r*W+c)*4;
+                    y = buff[index+3];
+                    tmperr = errDiffusion(IRxy, r-i+c-j);
+                    if(IQxy) buff[index+3] = tmperr>y ? 0 : y-tmperr;
+                    else buff[index+3] = 255-tmperr<y ? 255 : y+tmperr;
+                }
+            }
+            for(int r=i+1; r<=i+2 && r<H; r++){
+                for(int c=j-1; c>=j-2 && c>=0; c--){
+                    index = (r*W+c)*4;
+                    y = buff[index+3];
+                    tmperr = errDiffusion(IRxy, r-i+j-c);
+                    if(IQxy) buff[index+3] = tmperr>y ? 0 : y-tmperr;
+                    else buff[index+3] = 255-tmperr<y ? 255 : y+tmperr;
+                }
+            }
+        }
+//        printf("\n");
+    }
+//    printf("=================\n");
+}
+
 void black_white(int W, int H, BYTE *buff, int bmW, int bmH, const BYTE *bayerMatrix) {
     int index;
     BYTE r, g, b, y;
@@ -423,7 +474,12 @@ void processScreenShootPixels()
     memcpy(src, pixels, sizeof(src));
 
     if(DitherArg) {
-        dither_jarvis(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, pixels, bayerMatrixSize, bayerMatrixSize, bayerMatrix);
+        if(UseSIMD){
+            dither_jarvis_simd(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, pixels, bayerMatrixSize, bayerMatrixSize, bayerMatrix);
+        }
+        else{
+            dither_jarvis(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, pixels, bayerMatrixSize, bayerMatrixSize, bayerMatrix);
+        }
     } else {
         if(UseSIMD){
             black_white_simd(MYSCREEN_WIDTH, MYSCREEN_HEIGHT, pixels, bayerMatrixSize, bayerMatrixSize, bayerMatrix);
