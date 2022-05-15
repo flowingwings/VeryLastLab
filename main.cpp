@@ -243,16 +243,16 @@ void black_white(int W, int H, BYTE *buff, int bmW, int bmH, const BYTE *bayerMa
 }
 
 void black_white_simd(int W, int H, BYTE *buff, int bmW, int bmH, const BYTE *bayerMatrix){
-    int index;
+    int index = 0;
     BYTE r, g, b, y;
     for(int i=0; i<H; i++){
         for(int j=0; j<W; j++){
-            index = (i * W + j) * 4;
             r = buff[index];
             g = buff[index+1];
             b = buff[index+2];
             y = (r>>2) + (g>>1) + (b>>2) + (r&0x1) + (g&0x1) + (b&0x1) - (r&g&b&0x1);
             *(unsigned int*)(buff + index) = y > bayerMatrix[(i%bmH)*bmW+j%bmW] || y==0xff ? 0x00ffffff : 0;
+            index += 4;
         }
     }
 }
